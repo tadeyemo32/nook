@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 /// A Claude Code or Codex run that Nook holds in the background, so the terminal that asked for it can close.
 struct AgentTask: Codable, Equatable, Identifiable {
@@ -15,6 +16,8 @@ struct AgentTask: Codable, Equatable, Identifiable {
     var summary: String?
     var session: String?
     var pid: Int32 = 0
+    /// Process start time disambiguates a PID after Nook restarts.
+    var pidStartMicros: UInt64?
     /// The session that handed this task over.
     var parent: String?
 
@@ -67,12 +70,24 @@ final class AgentTaskRunner {
     private var processes: [String: Process] = [:]
     private var watchers: [String: DispatchSourceProcess] = [:]
 
+    static func processStartMicros(_ pid: Int32) -> UInt64? {
+        guard pid > 1 else { return nil }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    static func isSameProcess(_ task: AgentTask) -> Bool {
+        guard let start = task.pidStartMicros else { return false }
+        return processStartMicros(task.pid) == start
+    }
+
     /// Picks up tasks that were still running when Nook last quit: they keep going without it.
     func resume() {
         tasks = (try? Data(contentsOf: Self.listURL)).flatMap { try? JSONDecoder().decode([AgentTask].self, from: $0) } ?? []
         for task in tasks where task.status == .running {
-            // shortcut: trusts the saved pid wasn't reused while Nook was away; check the process name if that bites.
-            if task.pid > 1, kill(task.pid, 0) == 0 {
+            if Self.isSameProcess(task) {
                 let source = DispatchSource.makeProcessSource(identifier: task.pid, eventMask: .exit, queue: .main)
                 source.setEventHandler { [weak self] in self?.finish(task.id, exitCode: nil) }
                 source.resume()
@@ -127,6 +142,7 @@ final class AgentTaskRunner {
             return
         }
         task.pid = process.processIdentifier
+        task.pidStartMicros = Self.processStartMicros(task.pid)
         processes[id] = process
         add(task)
         onBanner?(Banner(symbol: "play.circle.fill", title: task.project, value: "Working", tint: task.agent.tint,
@@ -147,8 +163,16 @@ final class AgentTaskRunner {
         switch action {
         case .stop:
             guard task.status == .running else { return }
+            if processes[id] == nil {
+                guard Self.isSameProcess(task) else {
+                    finish(id, exitCode: nil)
+                    return
+                }
+            }
             tasks[index].status = .stopped
             if let process = processes[id] { process.terminate() } else if task.pid > 1 { kill(task.pid, SIGTERM) }
+            save()
+            publish()
         case .openInTerminal:
             openInTerminal(task)
         case .remove:
@@ -214,13 +238,15 @@ final class AgentTaskRunner {
         watchers[id] = nil
         guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].finished == nil else { return }
         var task = tasks[index]
-        let output = (try? String(contentsOf: Self.file(id, "out"), encoding: .utf8)) ?? ""
+        // Agent logs can be very large; only the beginning and end carry the result events.
+        let output = Self.readBounded(Self.file(id, "out"), limit: 4 * 1024 * 1024,
+                                      includePrefix: task.agent == .codex) ?? ""
         let result = task.agent == .codex
-            ? Self.codexResult(output, lastMessage: try? String(contentsOf: Self.file(id, "last"), encoding: .utf8))
+            ? Self.codexResult(output, lastMessage: Self.readBounded(Self.file(id, "last"), limit: 8192))
             : Self.claudeResult(output)
         task.finished = Date()
         if task.status == .running { task.status = result.ok ?? (exitCode == 0) ? .done : .failed }
-        let errors = (try? String(contentsOf: Self.file(id, "log"), encoding: .utf8))?
+        let errors = Self.readBounded(Self.file(id, "log"), limit: 8192)?
             .split(separator: "\n").last.map(String.init)
         task.summary = (result.summary ?? (task.status == .failed ? errors : nil)).map { String($0.prefix(600)) }
         task.session = result.session ?? task.session
@@ -260,6 +286,24 @@ final class AgentTaskRunner {
 
     private func publish() {
         onChange?(tasks)
+    }
+
+    static func readBounded(_ url: URL, limit: Int, includePrefix: Bool = false) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let length = try? handle.seekToEnd() else { return nil }
+        let start = length > UInt64(limit) ? length - UInt64(limit) : 0
+        let prefix: Data
+        if includePrefix, start > 0 {
+            try? handle.seek(toOffset: 0)
+            prefix = (try? handle.read(upToCount: 16 * 1024)) ?? Data()
+        } else {
+            prefix = Data()
+        }
+        guard (try? handle.seek(toOffset: start)) != nil,
+              let suffix = try? handle.read(upToCount: limit) else { return nil }
+        let data = prefix.isEmpty ? suffix : prefix + Data("\n".utf8) + suffix
+        return String(decoding: data, as: UTF8.self)
     }
 
     static func file(_ id: String, _ ext: String) -> URL { folder.appendingPathComponent("\(id).\(ext)") }

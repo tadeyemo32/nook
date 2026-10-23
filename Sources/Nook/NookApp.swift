@@ -4,10 +4,14 @@ import AppKit
 enum NookApp {
     @MainActor private static let delegate = AppDelegate()
 
+    static func isCLIInvocation(_ arguments: [String]) -> Bool {
+        arguments.first.map { CLI.commands.contains($0) || !$0.hasPrefix("-") } ?? false
+    }
+
     @MainActor
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        if let command = arguments.first, CLI.commands.contains(command) { exit(CLI.run(arguments)) }
+        if isCLIInvocation(arguments) { exit(CLI.run(arguments)) }
         let app = NSApplication.shared
         app.delegate = delegate
         app.setActivationPolicy(.accessory)

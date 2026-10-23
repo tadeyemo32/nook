@@ -326,7 +326,7 @@ private struct AgentSettings: View {
         } header: {
             Text("In the island")
         } footer: {
-            Text("An agent appears as soon as it starts and goes the moment you quit it. Each one gets its own logo and number, side by side, for its 5-hour limit; click it for the Agents page.")
+            Text("An agent appears as soon as it starts and goes the moment you quit it. Each one gets its own logo and number, side by side, for whichever limit is closest to running out; click it for the Agents page.")
         }
 
         Section("On the Agents page") {

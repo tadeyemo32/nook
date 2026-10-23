@@ -3,6 +3,16 @@
 Nook follows [semantic versioning](https://semver.org). Until 1.0, a minor version
 can include breaking changes.
 
+## 0.6.1 — 2026-10-23
+
+- Stop on a background task Nook picked up after a restart checks the process's start
+  time first, so it can never signal an unrelated process that reused the PID.
+- Finishing a task reads only the start and end of its output, so a huge log can't
+  stall the island.
+- `nook` with an unknown command prints an error instead of opening a second Nook.
+- The usage chip beside the notch shows whichever limit is closest to running out (the
+  weekly one at 98% rather than the 5-hour one at 23%), and Settings now says so.
+
 ## 0.6.0 — 2026-10-23
 
 Accurate agent status

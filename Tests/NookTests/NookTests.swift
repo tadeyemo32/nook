@@ -2,6 +2,13 @@ import XCTest
 @testable import Nook
 
 final class CLITests: XCTestCase {
+    func testUnknownCommandUsesCLIErrorPath() {
+        XCTAssertTrue(NookApp.isCLIInvocation(["sho", "hello"]))
+        XCTAssertFalse(NookApp.isCLIInvocation([]))
+        XCTAssertFalse(NookApp.isCLIInvocation(["-psn_0_12345"]))
+        XCTAssertThrowsError(try CLI.url(for: ["sho", "hello"]))
+    }
+
     func testShowEncodesEverythingButUnreserved() throws {
         let url = try XCTUnwrap(CLI.url(for: ["show", "Build", "passed", "&", "done=1", "--tint", "green"]))
         XCTAssertEqual(url.absoluteString, "nook://show?tint=green&title=Build%20passed%20%26%20done%3D1")
@@ -32,6 +39,29 @@ final class CLITests: XCTestCase {
 final class AgentTaskTests: XCTestCase {
     private let request = AgentTaskRequest(agent: .claude, prompt: "fix it", cwd: "/tmp", executable: "/bin/claude",
                                            path: "/usr/bin", resume: "54aeb2b5-1217-4f75-9033-19e31e30e5a6")
+
+    func testRecoveredTaskRequiresMatchingProcessStart() throws {
+        var task = AgentTask(id: UUID().uuidString, agent: .claude, prompt: "test", cwd: "/tmp",
+                             executable: "/bin/sh", started: Date())
+        task.pid = getpid()
+        task.pidStartMicros = try XCTUnwrap(AgentTaskRunner.processStartMicros(task.pid))
+        XCTAssertTrue(AgentTaskRunner.isSameProcess(task))
+        task.pidStartMicros! += 1
+        XCTAssertFalse(AgentTaskRunner.isSameProcess(task))
+        task.pidStartMicros = nil
+        XCTAssertFalse(AgentTaskRunner.isSameProcess(task))
+    }
+
+    func testTaskLogReadsOnlyBoundedData() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try ("start\n" + String(repeating: "x", count: 32 * 1024) + "\nend").write(to: url, atomically: true,
+                                                                            encoding: .utf8)
+        XCTAssertEqual(AgentTaskRunner.readBounded(url, limit: 8), "xxxx\nend")
+        let both = try XCTUnwrap(AgentTaskRunner.readBounded(url, limit: 8, includePrefix: true))
+        XCTAssertTrue(both.hasPrefix("start\n"))
+        XCTAssertTrue(both.hasSuffix("xxxx\nend"))
+    }
 
     func testClaudeArgumentsForkTheSessionAndEndWithThePrompt() {
         let arguments = AgentTaskRunner.arguments(for: request, id: "id", permissions: "auto")
