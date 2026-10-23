@@ -210,6 +210,13 @@ private struct CompactView: View {
                     Text(custom.title)
                 }
             }
+        case .task:
+            if let task = model.runningTasks.first {
+                HStack(spacing: 6) {
+                    AgentLogo(agent: task.agent, size: 18).frame(width: 22)
+                    Text(model.taskTitle)
+                }
+            }
         case .timer:
             if let timer = model.timer {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -249,6 +256,8 @@ private struct CompactView: View {
             } else {
                 ProgressView().controlSize(.mini)
             }
+        case .task:
+            ProgressView().controlSize(.mini)
         case .timer:
             if let timer = model.timer {
                 TimelineView(.periodic(from: .now, by: 1)) { context in

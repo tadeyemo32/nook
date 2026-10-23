@@ -28,6 +28,8 @@ struct Banner: Equatable {
     var duration: TimeInterval = 3
     var showsTitle = false
     var agent: AgentUsage.Agent? = nil
+    /// Still shows while a Focus has asked Nook to stay quiet.
+    var urgent = false
 
     var displaysTitle: Bool { showsTitle || value == nil }
 }
@@ -65,6 +67,19 @@ struct CalendarItem: Equatable, Identifiable {
     var end: Date
     var isAllDay: Bool
     var color: NSColor
+    var meetingURL: URL? = nil
+}
+
+struct ReminderItem: Equatable, Identifiable {
+    var id: String
+    var title: String
+    var due: Date?
+    var color: NSColor
+}
+
+struct LyricLine: Equatable {
+    var time: Double
+    var text: String
 }
 
 struct WeatherInfo: Equatable {
@@ -117,7 +132,7 @@ enum Tab: String, CaseIterable, Identifiable {
     }
 }
 
-enum Activity: Equatable { case banner, lock, custom, timer, download, nowPlaying, privacy }
+enum Activity: Equatable { case banner, lock, custom, task, timer, download, nowPlaying, privacy }
 
 @Observable
 final class IslandPlacement {
@@ -167,13 +182,30 @@ final class IslandModel {
     var clipboard: [String] = []
     var stats: SystemStats?
     var agents: [AgentUsage] = []
+    var tasks: [AgentTask] = []
     var widgets: [PluginItem] = []
+    var homeWidgets: [PluginItem] = []
+    var reminders: [ReminderItem] = []
+    var lyrics: [LyricLine]?
+    /// Set by Nook's Focus filter: only urgent banners show.
+    var quiet = false
+
+    var runningTasks: [AgentTask] { tasks.filter { $0.status == .running } }
+
+    /// The meeting to join: one with a call link that's on now or starts within 10 minutes.
+    var nextMeeting: CalendarItem? {
+        let now = Date()
+        return events.first { $0.meetingURL != nil && !$0.isAllDay && $0.end > now && $0.start.timeIntervalSince(now) < 600 }
+    }
 
     private(set) var expandOnHover = UserDefaults.standard.bool(forKey: Pref.expandOnHover.rawValue)
 
     @ObservationIgnored var onMediaCommand: ((MediaCommand) -> Void)?
     @ObservationIgnored var onTimerFinished: (() -> Void)?
     @ObservationIgnored var onOpenSettings: (() -> Void)?
+    @ObservationIgnored var onTask: ((String, TaskAction) -> Void)?
+    @ObservationIgnored var onCompleteReminder: ((String) -> Void)?
+    @ObservationIgnored var onHomeToggle: ((String) -> Void)?
     @ObservationIgnored private var hudWork: DispatchWorkItem?
     @ObservationIgnored private var bannerWork: DispatchWorkItem?
     @ObservationIgnored private var timerWork: DispatchWorkItem?
@@ -182,6 +214,7 @@ final class IslandModel {
         if banner != nil { return .banner }
         if locked || unlocking { return .lock }
         if custom != nil { return .custom }
+        if !runningTasks.isEmpty { return .task }
         if timer != nil { return .timer }
         if download != nil { return .download }
         if nowPlaying?.isPlaying == true { return .nowPlaying }
@@ -200,7 +233,12 @@ final class IslandModel {
 
     var showsCalendar = false
     var enabledTabs: [Tab] = [.home]
-    var visibleTabs: [Tab] { enabledTabs.filter { $0 != .agents || !agents.isEmpty } }
+    var visibleTabs: [Tab] { enabledTabs.filter { $0 != .agents || !agents.isEmpty || !tasks.isEmpty } }
+
+    var taskTitle: String {
+        let running = runningTasks
+        return running.count == 1 ? running[0].project : "\(running.count) tasks"
+    }
     var showsAgentChips = true
 
     func size(on placement: IslandPlacement) -> CGSize {
@@ -235,6 +273,7 @@ final class IslandModel {
         case .custom:
             guard let custom else { return 40 }
             return min(190, max(60, 42 + Self.textWidth(custom.title)))
+        case .task: return min(190, max(60, 42 + Self.textWidth(taskTitle)))
         case .timer: return 62
         case .download: return 54
         case .nowPlaying: return 40
@@ -261,6 +300,7 @@ final class IslandModel {
     }
 
     func show(_ newBanner: Banner) {
+        guard !quiet || newBanner.urgent else { return }
         banner = newBanner
         bannerWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.banner = nil }
@@ -279,7 +319,7 @@ final class IslandModel {
         } else if Pref.bool(.batteryAlerts), !info.isPluggedIn, let previous {
             for threshold in [0.2, 0.1] where info.level <= threshold && previous.level > threshold {
                 show(Banner(symbol: threshold > 0.1 ? "battery.25" : "battery.0",
-                            title: "Low Battery", value: percent, tint: .systemRed, duration: 5))
+                            title: "Low Battery", value: percent, tint: .systemRed, duration: 5, urgent: true))
             }
         }
     }
@@ -335,7 +375,7 @@ final class IslandModel {
         timerWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.timer = nil
-            self?.show(Banner(symbol: "timer", title: "Timer", value: "Done", tint: .systemOrange, duration: 6))
+            self?.show(Banner(symbol: "timer", title: "Timer", value: "Done", tint: .systemOrange, duration: 6, urgent: true))
             self?.onTimerFinished?()
         }
         timerWork = work

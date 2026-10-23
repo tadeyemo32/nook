@@ -4,6 +4,7 @@ import EventKit
 
 final class CalendarService {
     var onEvents: (([CalendarItem]) -> Void)?
+    var onReminders: (([ReminderItem]) -> Void)?
     var onBanner: ((Banner) -> Void)?
 
     private let store = EKEventStore()
@@ -17,24 +18,82 @@ final class CalendarService {
             observer = NotificationCenter.default.addObserver(
                 forName: .EKEventStoreChanged, object: store, queue: .main
             ) { [weak self] _ in self?.refresh() }
-            store.requestFullAccessToEvents { [weak self] _, _ in
-                DispatchQueue.main.async { self?.refresh() }
-            }
+            refresh()
         } else if !enabled, let timer {
             timer.invalidate()
             self.timer = nil
             observer.map(NotificationCenter.default.removeObserver)
             observer = nil
             onEvents?([])
+            onReminders?([])
+        }
+        // Each permission is asked for only once its feature is on, even if the other one started the service.
+        let done: (Bool, Error?) -> Void = { [weak self] _, _ in DispatchQueue.main.async { self?.refresh() } }
+        if enabled, Pref.bool(.showCalendar) || Pref.bool(.calendarAlerts),
+           EKEventStore.authorizationStatus(for: .event) == .notDetermined {
+            store.requestFullAccessToEvents(completion: done)
+        }
+        if enabled, Pref.bool(.showReminders), EKEventStore.authorizationStatus(for: .reminder) == .notDetermined {
+            store.requestFullAccessToReminders(completion: done)
         }
     }
 
+    func complete(_ id: String) {
+        guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else { return }
+        reminder.isCompleted = true
+        try? store.save(reminder, commit: true)
+        refresh()
+    }
+
+    private func refreshReminders(now: Date) {
+        guard Pref.bool(.showReminders), EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else {
+            onReminders?([])
+            return
+        }
+        let endOfToday = Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 3600)
+        let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: endOfToday, calendars: nil)
+        store.fetchReminders(matching: predicate) { [weak self] reminders in
+            let items = (reminders ?? []).map { reminder in
+                ReminderItem(id: reminder.calendarItemIdentifier, title: reminder.title ?? "Reminder",
+                             due: reminder.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
+                             color: reminder.calendar.color ?? .systemOrange)
+            }.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) }
+            // Only reminders with a time alert, once, in the minute they fall due.
+            let due = (reminders ?? []).filter { reminder in
+                guard reminder.dueDateComponents?.hour != nil,
+                      let date = reminder.dueDateComponents.flatMap({ Calendar.current.date(from: $0) })
+                else { return false }
+                return date <= now && now.timeIntervalSince(date) < 90
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                onReminders?(items)
+                for reminder in due where announced.insert("reminder-" + reminder.calendarItemIdentifier).inserted {
+                    onBanner?(Banner(symbol: "checklist", title: reminder.title ?? "Reminder", value: "Now",
+                                     tint: reminder.calendar.color ?? .systemOrange, duration: 6, showsTitle: true))
+                }
+            }
+        }
+    }
+
+    /// The first video-call link in an event's URL, location or notes.
+    static func meetingURL(in texts: [String?]) -> URL? {
+        let pattern = #"https://([\w-]+\.)*(zoom\.us/(j|my|w)/|meet\.google\.com/|teams\.microsoft\.com/l/meetup-join/|teams\.live\.com/meet/|webex\.com/|whereby\.com/|facetime\.apple\.com/join|app\.slack\.com/huddle/)[^\s<>"')]*"#
+        for text in texts.compactMap({ $0 }) {
+            if let range = text.range(of: pattern, options: .regularExpression), let url = URL(string: String(text[range])) {
+                return url
+            }
+        }
+        return nil
+    }
+
     private func refresh() {
+        let now = Date()
+        refreshReminders(now: now)
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             onEvents?([])
             return
         }
-        let now = Date()
         let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-6 * 3600),
                                                  end: now.addingTimeInterval(36 * 3600), calendars: nil)
         let events = store.events(matching: predicate)
@@ -44,7 +103,8 @@ final class CalendarService {
         onEvents?(events.map {
             CalendarItem(id: ($0.eventIdentifier ?? UUID().uuidString) + "\($0.startDate.timeIntervalSince1970)",
                          title: $0.title ?? "Event", start: $0.startDate, end: $0.endDate,
-                         isAllDay: $0.isAllDay, color: $0.calendar.color ?? .systemBlue)
+                         isAllDay: $0.isAllDay, color: $0.calendar.color ?? .systemBlue,
+                         meetingURL: Self.meetingURL(in: [$0.url?.absoluteString, $0.location, $0.notes]))
         })
 
         guard Pref.bool(.calendarAlerts) else { return }

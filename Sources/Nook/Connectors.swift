@@ -11,8 +11,8 @@ enum NookSupport {
 }
 
 struct AgentUsage: Equatable, Identifiable {
-    enum Agent: String, CaseIterable {
-        case claude, codex
+    enum Agent: String, CaseIterable, Codable {
+        case claude, codex, cursor, gemini
     }
 
     struct Window: Equatable {
@@ -33,7 +33,7 @@ struct AgentUsage: Equatable, Identifiable {
     var plan: String?
 
     var id: Agent { agent }
-    var busiest: Window? { windows.first { $0.name == "5-hour" } ?? windows.max { $0.used < $1.used } }
+    var busiest: Window? { windows.max { $0.used < $1.used } }
 
     func contextBanner(warned: inout Set<String>) -> Banner? {
         guard let context else { return nil }
@@ -62,15 +62,41 @@ struct AgentUsage: Equatable, Identifiable {
 }
 
 extension AgentUsage.Agent {
-    var name: String { self == .claude ? "Claude" : "Codex" }
+    var name: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        case .cursor: return "Cursor"
+        case .gemini: return "Gemini"
+        }
+    }
 
     var appIcon: NSImage? { Self.icons[self] }
 
-    var symbol: String { self == .claude ? "asterisk" : "terminal.fill" }
-    var tint: NSColor { self == .claude ? NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1) : .white }
+    var symbol: String {
+        switch self {
+        case .claude: return "asterisk"
+        case .codex: return "terminal.fill"
+        case .cursor: return "cursorarrow.rays"
+        case .gemini: return "sparkle"
+        }
+    }
+
+    var tint: NSColor {
+        switch self {
+        case .claude: return NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
+        case .gemini: return NSColor(red: 0.3, green: 0.55, blue: 1, alpha: 1)
+        default: return .white
+        }
+    }
 
     private static let icons: [Self: NSImage] = Dictionary(uniqueKeysWithValues: allCases.compactMap { agent in
-        let ids = agent == .claude ? ["com.anthropic.claudefordesktop"] : ["com.openai.codex", "com.openai.chat"]
+        let ids = switch agent {
+        case .claude: ["com.anthropic.claudefordesktop"]
+        case .codex: ["com.openai.codex", "com.openai.chat"]
+        case .cursor: ["com.todesktop.230313mzl4w4u92"]
+        case .gemini: [String]()
+        }
         return ids.lazy.compactMap(NSWorkspace.shared.urlForApplication(withBundleIdentifier:)).first
             .map { (agent, NSWorkspace.shared.icon(forFile: $0.path)) }
     })
@@ -80,6 +106,8 @@ final class AgentConnector {
     var onBanner: ((Banner) -> Void)?
     var onAttention: ((CustomActivity?) -> Void)?
     var onUsage: (([AgentUsage]) -> Void)?
+    /// Whether a session just handed its work to a Nook background task, so its Stop isn't "Done".
+    var isHandedOff: ((String?, String?) -> Bool)?
 
     private static let marker = "Nook/claude-"
     private static var settingsURL: URL {
@@ -87,6 +115,12 @@ final class AgentConnector {
     }
     private static var codexHooksURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/hooks.json")
+    }
+    private static var cursorHooksURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor/hooks.json")
+    }
+    private static var geminiSettingsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/settings.json")
     }
     private static var hookScript: URL { NookSupport.folder.appendingPathComponent("claude-hook.sh") }
     private static var statusScript: URL { NookSupport.folder.appendingPathComponent("claude-statusline.sh") }
@@ -98,9 +132,18 @@ final class AgentConnector {
         return key
     }
 
-    static let claudeEvents = ["Notification", "Stop", "SubagentStop", "UserPromptSubmit", "PreCompact",
-                               "SessionStart", "SessionEnd"]
-    static let codexEvents = ["Stop", "UserPromptSubmit", "SessionStart"]
+    /// (key in the agent's config, the Claude-style event name Nook's hook script is called with)
+    typealias Events = [(key: String, event: String)]
+    static let claudeEvents: Events = ["Notification", "Stop", "StopFailure", "SubagentStop", "UserPromptSubmit",
+                                       "PreCompact", "SessionStart", "SessionEnd"].map { ($0, $0) }
+    static let codexEvents: Events = ["Stop", "UserPromptSubmit", "SessionStart"].map { ($0, $0) }
+    static let geminiEvents: Events = [("SessionStart", "SessionStart"), ("SessionEnd", "SessionEnd"),
+                                       ("BeforeAgent", "UserPromptSubmit"), ("AfterAgent", "Stop"),
+                                       ("Notification", "Notification"), ("PreCompress", "PreCompact")]
+    /// Only hooks that just observe: Cursor blocks a gated action (like a shell command) on unexpected output.
+    static let cursorEvents: Events = [("sessionStart", "SessionStart"), ("sessionEnd", "SessionEnd"),
+                                       ("stop", "Stop"), ("subagentStop", "SubagentStop"),
+                                       ("preCompact", "PreCompact")]
 
     private var timer: Timer?
     private var attention: (agent: AgentUsage.Agent, session: String?)?
@@ -113,6 +156,40 @@ final class AgentConnector {
 
     static var isConnected: Bool { isInstalled(in: settingsURL) }
     static var isCodexConnected: Bool { isInstalled(in: codexHooksURL) }
+
+    static func isConnected(_ agent: AgentUsage.Agent) -> Bool {
+        switch agent {
+        case .claude: return isConnected
+        case .codex: return isCodexConnected
+        case .cursor: return isInstalled(in: cursorHooksURL)
+        case .gemini: return isInstalled(in: geminiSettingsURL)
+        }
+    }
+
+    static func connect(_ agent: AgentUsage.Agent) throws {
+        switch agent {
+        case .claude: try connect()
+        case .codex: try connectCodex()
+        case .cursor:
+            try writeScripts()
+            try writeSettings(connectedCursor(try readSettings(cursorHooksURL), hookScript: hookScript.path),
+                              to: cursorHooksURL)
+        case .gemini:
+            try writeScripts()
+            try writeSettings(connected(try readSettings(geminiSettingsURL), hookScript: hookScript.path,
+                                        statusScript: nil, events: geminiEvents, agent: "gemini"),
+                              to: geminiSettingsURL)
+        }
+    }
+
+    static func disconnect(_ agent: AgentUsage.Agent) throws {
+        switch agent {
+        case .claude: try disconnect()
+        case .codex: try disconnectCodex()
+        case .cursor: try writeSettings(disconnectedHooks(try readSettings(cursorHooksURL)), to: cursorHooksURL)
+        case .gemini: try writeSettings(disconnectedHooks(try readSettings(geminiSettingsURL)), to: geminiSettingsURL)
+        }
+    }
 
     private static func isInstalled(in url: URL) -> Bool {
         guard let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) else { return false }
@@ -146,30 +223,104 @@ final class AgentConnector {
         try writeSettings(disconnected(try readSettings(codexHooksURL)), to: codexHooksURL)
     }
 
+    private static let skillMarker = "Installed by Nook (nook-skill)"
+
+    private static func skillURL(_ agent: AgentUsage.Agent) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(agent == .codex ? ".codex/skills/nook/SKILL.md" : ".claude/skills/nook/SKILL.md")
+    }
+
+    static func isSkillInstalled(_ agent: AgentUsage.Agent) -> Bool {
+        ((try? String(contentsOf: skillURL(agent), encoding: .utf8)) ?? "").contains(skillMarker)
+    }
+
+    /// The /nook skill: the agent hands the task to `nook run`, and Nook runs it in the background.
+    static func installSkill(_ agent: AgentUsage.Agent) throws {
+        let command = "\"$HOME/Library/Application Support/Nook/bin/nook\" run --agent \(agent.rawValue)"
+        let task = agent == .codex ? "Hand the user's task to Nook instead of doing it here." : """
+        Hand this task to Nook instead of doing it here:
+
+        $ARGUMENTS
+        """
+        let steps = agent == .codex ? """
+        1. Write the task as a complete, self-contained brief: the background run starts fresh and won't see \
+        this conversation, so include the goal, the files involved and what done looks like.
+        2. From the project folder, run (quote the brief for the shell):
+
+           \(command) -- '<brief>'
+
+           It writes to ~/Library/Application Support/Nook and opens Nook, which Codex's sandbox blocks, so \
+        run it with escalated permissions from the start: the user approves once and can allow it for good.
+        """ : """
+        1. If nothing is written above, the task is what the user just asked for.
+        2. From the project folder, run (quote the task for the shell):
+
+           \(command) --resume ${CLAUDE_SESSION_ID} -- '<task>'
+
+           The background session continues this conversation, so a short task is enough.
+        """
+        let skill = """
+        ---
+        name: nook
+        description: Hand a task to Nook so it runs in the background and the user can close this terminal. Nook shows \(agent.name)'s logo in the Mac's notch while it works and Done when it finishes. Use when the user types /nook <task>, or asks to run something in the background, hand it to Nook, or wants to close the terminal while you work.
+        argument-hint: <task>
+        ---
+        <!-- \(skillMarker). Settings → Coding Agents in Nook removes it. -->
+
+        \(task)
+
+        \(steps)
+        3. Tell the user in one line that Nook is running it and they can close the terminal: the notch shows \
+        Done when it finishes, and Nook's Agents page can reopen the session. Don't start on the task yourself.
+
+        """
+        let url = skillURL(agent)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try skill.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    static func removeSkill(_ agent: AgentUsage.Agent) throws {
+        guard isSkillInstalled(agent) else { return }
+        try FileManager.default.removeItem(at: skillURL(agent).deletingLastPathComponent())
+    }
+
     static func upgradeIfNeeded() {
-        if isConnected || isCodexConnected { try? writeScripts() }
+        if AgentUsage.Agent.allCases.contains(where: isConnected) { try? writeScripts() }
+        for agent in AgentTaskRequest.agents where isSkillInstalled(agent) { try? installSkill(agent) }
         guard isConnected, let hooks = (try? readSettings(settingsURL))?["hooks"] as? [String: Any],
               claudeEvents.contains(where: { event in
-                  !((hooks[event] as? [[String: Any]]) ?? []).contains(where: isOurs)
+                  !((hooks[event.key] as? [[String: Any]]) ?? []).contains(where: isOurs)
               })
         else { return }
         try? connect()
     }
 
     static func connected(_ settings: [String: Any], hookScript: String, statusScript: String?,
-                          events: [String] = claudeEvents, agent: String? = nil) -> [String: Any] {
+                          events: Events = claudeEvents, agent: String? = nil) -> [String: Any] {
         var settings = disconnectedHooks(settings)
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
-        for event in events {
-            var entries = hooks[event] as? [[String: Any]] ?? []
+        for (key, event) in events {
+            var entries = hooks[key] as? [[String: Any]] ?? []
             let command = "\"\(hookScript)\" \(event)" + (agent.map { " \($0)" } ?? "")
             entries.append(["hooks": [["type": "command", "command": command]]])
-            hooks[event] = entries
+            hooks[key] = entries
         }
         settings["hooks"] = hooks
         if let statusScript, settings["statusLine"] == nil {
             settings["statusLine"] = ["type": "command", "command": "\"\(statusScript)\"", "padding": 0]
         }
+        return settings
+    }
+
+    /// Cursor's hooks.json has no matcher groups: each event lists commands directly.
+    static func connectedCursor(_ settings: [String: Any], hookScript: String) -> [String: Any] {
+        var settings = disconnectedHooks(settings)
+        var hooks = settings["hooks"] as? [String: Any] ?? [:]
+        for (key, event) in cursorEvents {
+            hooks[key] = (hooks[key] as? [[String: Any]] ?? []) + [["command": "\"\(hookScript)\" \(event) cursor"]]
+        }
+        settings["hooks"] = hooks
+        settings["version"] = settings["version"] ?? 1
         return settings
     }
 
@@ -182,7 +333,7 @@ final class AgentConnector {
         return settings
     }
 
-    private static func disconnectedHooks(_ settings: [String: Any]) -> [String: Any] {
+    static func disconnectedHooks(_ settings: [String: Any]) -> [String: Any] {
         var settings = settings
         guard var hooks = settings["hooks"] as? [String: Any] else { return settings }
         for (event, value) in hooks {
@@ -195,7 +346,7 @@ final class AgentConnector {
     }
 
     private static func isOurs(_ entry: [String: Any]) -> Bool {
-        (entry["hooks"] as? [[String: Any]] ?? []).contains { ($0["command"] as? String ?? "").contains(marker) }
+        ((entry["hooks"] as? [[String: Any]] ?? []) + [entry]).contains { ($0["command"] as? String ?? "").contains(marker) }
     }
 
     private static func readSettings(_ url: URL) throws -> [String: Any] {
@@ -227,7 +378,12 @@ final class AgentConnector {
         # claude by default) to Nook. Only the fields Nook shows are sent, base64url-encoded:
         # never prompts or transcripts.
         input=$(cat)
+        # Background tasks Nook runs itself report when they finish.
+        [ -n "${NOOK_TASK:-}" ] && exit 0
+        # Gemini CLI and Cursor read a hook's output as JSON.
+        case "${2:-claude}" in cursor|gemini) printf '{}' ;; esac
         field() { printf '%s' "$input" | plutil -extract "$1" raw -o - - 2>/dev/null | tr -d '\\n' | head -c 300 | base64 | tr '+/' '-_' | tr -d '\\n='; }
+        first() { for key in "$@"; do value=$(field "$key"); [ -n "$value" ] && { printf '%s' "$value"; return; }; done; }
         # Up past the shells that ran us to the agent itself, so Nook can tell when it quits.
         pid=$PPID
         while [ "${pid:-0}" -gt 1 ]; do
@@ -236,7 +392,13 @@ final class AgentConnector {
             *) break ;;
           esac
         done
-        open -g "nook://claude?key=\(hookKey)&agent=${2:-claude}&event=$1&pid=${pid:-0}&type=$(field notification_type)&message=$(field message)&cwd=$(field cwd)&session=$(field session_id)"
+        # A reply can end with work still going: background tasks, scheduled prompts, or a question.
+        # Only counts and a yes/no reach Nook, never the message itself.
+        running=$(printf '%s' "$input" | plutil -extract background_tasks json -o - - 2>/dev/null | grep -oE '"status":"(running|pending)"' | wc -l | tr -d ' ')
+        crons=$(printf '%s' "$input" | plutil -extract session_crons json -o - - 2>/dev/null | grep -o '"schedule"' | wc -l | tr -d ' ')
+        last=$(for key in last_assistant_message prompt_response; do printf '%s' "$input" | plutil -extract "$key" raw -o - - 2>/dev/null && break; done | tr -d ' \t\n*_)"' | tail -c 1)
+        asks=0; [ "$last" = "?" ] && asks=1
+        open -g "nook://claude?key=\(hookKey)&agent=${2:-claude}&event=$1&pid=${pid:-0}&type=$(field notification_type)&message=$(field message)&cwd=$(first cwd workspace_roots.0)&session=$(first session_id conversation_id)&status=$(field status)&error=$(field error)&running=${running:-0}&crons=${crons:-0}&asks=$asks"
 
         """
         let status = """
@@ -270,7 +432,9 @@ final class AgentConnector {
         let agent = AgentUsage.Agent(rawValue: query["agent"] ?? "") ?? .claude
         let project = decoded("cwd").map { URL(fileURLWithPath: $0).lastPathComponent } ?? agent.name
         let session = decoded("session")
-        trackSession(agent, session, event: query["event"], pid: pid_t(query["pid"] ?? "") ?? 0)
+        let state = Self.stopState(query, status: decoded("status"))
+        trackSession(agent, session, event: query["event"], pid: pid_t(query["pid"] ?? "") ?? 0,
+                     stillWorking: state != .done && state != .failed && state != .aborted)
         func banner(_ symbol: String, _ value: String, _ tint: NSColor, _ pref: Pref, duration: TimeInterval = 3) {
             guard Pref.bool(pref) else { return }
             onBanner?(Banner(symbol: symbol, title: project, value: value, tint: tint, duration: duration,
@@ -280,7 +444,7 @@ final class AgentConnector {
         switch query["event"] {
         case "Notification":
             switch decoded("type") {
-            case "permission_prompt", "worker_permission_prompt", "workflow_permission_prompt":
+            case "permission_prompt", "worker_permission_prompt", "workflow_permission_prompt", "ToolPermission":
                 needsYou(agent, session, project, "Permission")
             case "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input":
                 needsYou(agent, session, project, "Question")
@@ -303,7 +467,19 @@ final class AgentConnector {
             }
         case "Stop":
             clearAttention(agent, session)
-            banner("checkmark.circle.fill", "Done", .systemGreen, .claudeDoneAlerts)
+            guard isHandedOff?(session, decoded("cwd")) != true else { break }
+            switch state {
+            case .failed: banner("xmark.octagon.fill", "Failed", .systemRed, .claudeDoneAlerts)
+            case .aborted: break
+            case .running(let count): banner("ellipsis.circle.fill", "\(count) running", .systemBlue, .claudeDoneAlerts)
+            case .scheduled: banner("clock.fill", "Scheduled", .systemIndigo, .claudeDoneAlerts)
+            case .question: banner("questionmark.bubble.fill", "Question", .systemOrange, .agentAlertWaiting, duration: 4)
+            case .done: banner("checkmark.circle.fill", "Done", .systemGreen, .claudeDoneAlerts)
+            }
+        case "StopFailure":
+            clearAttention(agent, session)
+            let error = decoded("error").map { $0.replacingOccurrences(of: "_", with: " ").capitalized }
+            banner("xmark.octagon.fill", String((error ?? "Failed").prefix(20)), .systemRed, .claudeDoneAlerts, duration: 5)
         case "SubagentStop":
             banner("person.2.fill", "Subagent done", .systemTeal, .agentAlertSubagent)
         case "PreCompact":
@@ -320,13 +496,26 @@ final class AgentConnector {
         }
     }
 
+    enum StopState: Equatable { case done, failed, aborted, running(Int), scheduled, question }
+
+    /// What a Stop really means: an agent ends a reply even while background tasks run, prompts are
+    /// scheduled to come back, or it has asked the user something.
+    static func stopState(_ query: [String: String], status: String?) -> StopState {
+        if status == "error" { return .failed }
+        if status == "aborted" { return .aborted }
+        if let running = Int(query["running"] ?? ""), running > 0 { return .running(running) }
+        if (Int(query["crons"] ?? "") ?? 0) > 0 { return .scheduled }
+        if query["asks"] == "1" { return .question }
+        return .done
+    }
+
     private func needsYou(_ agent: AgentUsage.Agent, _ session: String?, _ project: String, _ reason: String) {
         guard Pref.bool(.agentAlertPermission) else { return }
         attention = (agent, session)
         onAttention?(CustomActivity(id: agent.rawValue, symbol: "hand.raised.fill", title: project,
                                     progress: nil, tint: .systemOrange, badge: "exclamationmark", agent: agent))
         onBanner?(Banner(symbol: "hand.raised.fill", title: project, value: reason, tint: .systemOrange,
-                         duration: 4, showsTitle: true, agent: agent))
+                         duration: 4, showsTitle: true, agent: agent, urgent: true))
         playSystemSound("Tink")
     }
 
@@ -362,7 +551,8 @@ final class AgentConnector {
         }
     }
 
-    private func trackSession(_ agent: AgentUsage.Agent, _ session: String?, event: String?, pid: pid_t) {
+    private func trackSession(_ agent: AgentUsage.Agent, _ session: String?, event: String?, pid: pid_t,
+                              stillWorking: Bool = false) {
         let key = "\(agent.rawValue)/\(session ?? "")"
         switch event {
         case "SessionEnd":
@@ -370,7 +560,7 @@ final class AgentConnector {
         case "UserPromptSubmit":
             sessions[key] = (agent, Date(), true)
         case "Stop":
-            sessions[key] = (agent, Date(), false)
+            sessions[key] = (agent, Date(), stillWorking)
         default:
             sessions[key] = (agent, Date(), sessions[key]?.working ?? false)
         }
@@ -572,6 +762,8 @@ struct PluginItem: Equatable, Identifiable {
     var tint: NSColor
     var progress: Double?
     var url: URL?
+    /// A Home Assistant entity that a tap toggles.
+    var entity: String? = nil
 }
 
 final class PluginRunner {
@@ -647,9 +839,11 @@ final class PluginRunner {
         }
     }
 
-    private static func run(_ script: URL) -> String? {
+    /// Runs a plugin (or another tool) for at most 10 seconds and returns the start of its output.
+    static func run(_ script: URL, arguments: [String] = [], limit: Int = 8192) -> String? {
         let process = Process()
         process.executableURL = script
+        process.arguments = arguments
         process.currentDirectoryURL = folder
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -660,7 +854,7 @@ final class PluginRunner {
         do { try process.run() } catch { return nil }
         let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: deadline)
-        let data = pipe.fileHandleForReading.readDataToEndOfFile().prefix(8192)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile().prefix(limit)
         process.waitUntilExit()
         deadline.cancel()
         return String(data: data, encoding: .utf8)

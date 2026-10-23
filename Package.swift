@@ -19,5 +19,10 @@ let package = Package(
             dependencies: ["NookXPC"],
             path: "Sources/NookHelper"
         ),
+        .testTarget(
+            name: "NookTests",
+            dependencies: ["Nook"],
+            path: "Tests/NookTests"
+        ),
     ]
 )

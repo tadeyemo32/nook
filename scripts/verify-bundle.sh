@@ -18,7 +18,7 @@ grep -q "\"$id\"" Sources/NookXPC/NookXPC.swift || {
 }
 
 for key in NSAudioCaptureUsageDescription NSBluetoothAlwaysUsageDescription NSCameraUsageDescription \
-           NSCalendarsFullAccessUsageDescription NSLocationUsageDescription; do
+           NSCalendarsFullAccessUsageDescription NSRemindersFullAccessUsageDescription NSLocationUsageDescription; do
     /usr/libexec/PlistBuddy -c "Print :$key" "$APP/Contents/Info.plist" >/dev/null
 done
 

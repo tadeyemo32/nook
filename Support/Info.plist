@@ -36,6 +36,17 @@
     <string>Nook shows your upcoming events in the notch and reminds you before they start.</string>
     <key>NSCalendarsUsageDescription</key>
     <string>Nook shows your upcoming events in the notch and reminds you before they start.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Nook shows the reminders due today in the notch, lets you tick them off and alerts you when one is due.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>Nook shows the reminders due today in the notch, lets you tick them off and alerts you when one is due.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Nook connects to your Home Assistant server on this network to show and toggle the entities you chose.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <key>NSLocationUsageDescription</key>
     <string>Nook uses your approximate location to show the local weather.</string>
     <key>NSLocationWhenInUseUsageDescription</key>

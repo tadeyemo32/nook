@@ -30,6 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let fullscreen = FullscreenMonitor()
     private let agents = AgentConnector()
     private let plugins = PluginRunner()
+    private let tasks = AgentTaskRunner()
+    private let github = GitHubMonitor()
+    private let ntfy = NtfyMonitor()
+    private let homeAssistant = HomeAssistantMonitor()
+    private let lyrics = LyricsService()
     private let lockSpace = LockScreenSpace()
 
     private var islands: [Island] = []
@@ -45,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Pref.register()
         AgentConnector.upgradeIfNeeded()
+        CLI.installWrapper()
         setUpPanel()
         setUpStatusItem()
         wireServices()
@@ -72,7 +78,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         let files = urls.filter(\.isFileURL)
         if !files.isEmpty { model.addToShelf(files) }
-        urls.filter { $0.scheme == "nook" }.forEach { URLCommands.handle($0, model: model, agents: agents) }
+        urls.filter { $0.scheme == "nook" }.forEach {
+            URLCommands.handle($0, model: model, agents: agents, tasks: tasks)
+        }
+    }
+
+    func joinNextMeeting() -> Bool {
+        guard let url = model.nextMeeting?.meetingURL else { return false }
+        return NSWorkspace.shared.open(url)
+    }
+
+    func setFocus(_ name: String?, quiet: Bool) {
+        model.quiet = quiet
+        model.show(Banner(symbol: name == nil ? "moon" : "moon.fill", title: name ?? "Focus",
+                          value: name == nil ? "Off" : "On", tint: .systemIndigo, showsTitle: true, urgent: true))
     }
 
     private func setUpPanel() {
@@ -185,7 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPrefs() {
-        if model.showsCalendar != Pref.bool(.showCalendar) { model.showsCalendar = Pref.bool(.showCalendar) }
+        let column = Pref.bool(.showCalendar) || Pref.bool(.showReminders)
+        if model.showsCalendar != column { model.showsCalendar = column }
         if model.showsAgentChips != Pref.bool(.agentChips) { model.showsAgentChips = Pref.bool(.agentChips) }
         let tabs = Tab.allCases.filter { $0.pref.map(Pref.bool) ?? true }
         if model.enabledTabs != tabs { model.enabledTabs = tabs }
@@ -209,11 +229,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         privacy.setEnabled(Pref.bool(.privacyIndicators))
         clipboard.setEnabled(Pref.bool(.clipboardHistory))
         downloads.setEnabled(Pref.bool(.downloadsActivity))
-        calendar.setEnabled(Pref.bool(.showCalendar) || Pref.bool(.calendarAlerts))
+        calendar.setEnabled(Pref.bool(.showCalendar) || Pref.bool(.calendarAlerts) || Pref.bool(.showReminders))
         weather.setEnabled(Pref.bool(.showWeather))
         fullscreen.setEnabled(fullscreen: Pref.bool(.hideInFullscreen), games: Pref.bool(.hideWhileGaming))
         agents.setEnabled(Pref.bool(.agentClaude) || Pref.bool(.agentCodex))
         plugins.setEnabled(Pref.bool(.plugins))
+        github.setEnabled(Pref.bool(.githubAlerts))
+        ntfy.setEnabled(Pref.bool(.ntfy))
+        homeAssistant.setEnabled(Pref.bool(.homeAssistant))
+        lyrics.update(model.nowPlaying)
         updateKeepAwake()
     }
 
@@ -325,6 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         media.onUpdate = { [weak self] info in
             self?.model.nowPlaying = info
+            self?.lyrics.update(info)
             self?.updateWaveform()
             self?.updateKeepAwake()
         }
@@ -364,6 +389,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.model.show(Banner(symbol: "arrow.down.circle.fill", title: name, value: "Done", tint: .systemGreen))
         }
         calendar.onEvents = { [weak self] events in self?.model.events = events }
+        calendar.onReminders = { [weak self] reminders in
+            if self?.model.reminders != reminders { self?.model.reminders = reminders }
+        }
+        model.onCompleteReminder = { [weak self] id in self?.calendar.complete(id) }
         calendar.onBanner = { [weak self] banner in self?.model.show(banner) }
         weather.onWeather = { [weak self] info in self?.model.weather = info }
 
@@ -386,7 +415,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         agents.onUsage = { [weak self] usage in
             if self?.model.agents != usage { self?.model.agents = usage }
         }
+        tasks.onChange = { [weak self] tasks in
+            guard let model = self?.model else { return }
+            let running = tasks.filter { $0.status == .running }.count
+            if running > model.runningTasks.count, !model.expanded { model.tab = .agents }
+            model.tasks = tasks
+        }
+        tasks.onBanner = { [weak self] banner in self?.model.show(banner) }
+        agents.isHandedOff = { [weak self] session, cwd in self?.tasks.isHandedOff(session: session, cwd: cwd) ?? false }
+        model.onTask = { [weak self] id, action in self?.tasks.perform(action, on: id) }
+        tasks.resume()
         plugins.onUpdate = { [weak self] items in self?.model.widgets = items }
+        github.onBanner = { [weak self] banner in self?.model.show(banner) }
+        ntfy.onBanner = { [weak self] banner in self?.model.show(banner) }
+        homeAssistant.onBanner = { [weak self] banner in self?.model.show(banner) }
+        homeAssistant.onUpdate = { [weak self] items in
+            if self?.model.homeWidgets != items { self?.model.homeWidgets = items }
+        }
+        model.onHomeToggle = { [weak self] entity in self?.homeAssistant.toggle(entity) }
+        lyrics.onLyrics = { [weak self] lines in self?.model.lyrics = lines }
         plugins.onAlert = { [weak self] banner in self?.model.show(banner) }
     }
 

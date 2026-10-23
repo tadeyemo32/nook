@@ -28,6 +28,15 @@ struct MediaPlayerView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(1)
+                    if let lyrics = model.lyrics {
+                        TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                            Text(LyricsService.line(in: lyrics, at: info.elapsed(at: context.date)) ?? "♪")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(tint.opacity(0.85))
+                                .lineLimit(1)
+                                .contentTransition(.opacity)
+                        }
+                    }
                 }
                 Spacer(minLength: 8)
                 if showsOutputPicker { OutputPicker() }

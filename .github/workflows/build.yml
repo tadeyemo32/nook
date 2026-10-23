@@ -16,6 +16,9 @@ jobs:
       - name: Toolchain
         run: swift --version
 
+      - name: Unit tests
+        run: swift test
+
       - name: Build universal app bundle
         run: UNIVERSAL=1 sh scripts/bundle.sh
 
@@ -28,10 +31,19 @@ jobs:
       - name: Zip app
         run: cd build && ditto -c -k --keepParent Nook.app Nook.zip
 
+      - name: Build DMG
+        run: |
+          mkdir -p build/dmg
+          cp -R build/Nook.app build/dmg/
+          ln -s /Applications build/dmg/Applications
+          hdiutil create -volname Nook -srcfolder build/dmg -fs HFS+ -format UDZO -ov build/Nook.dmg
+
       - uses: actions/upload-artifact@v4
         with:
           name: Nook
-          path: build/Nook.zip
+          path: |
+            build/Nook.zip
+            build/Nook.dmg
 
   smoke-test:
     needs: build
@@ -81,4 +93,4 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" Nook.zip --repo "$GITHUB_REPOSITORY" --title "Nook $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" Nook.dmg Nook.zip --repo "$GITHUB_REPOSITORY" --title "Nook $GITHUB_REF_NAME" --generate-notes

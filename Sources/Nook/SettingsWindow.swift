@@ -146,11 +146,17 @@ private struct MediaSettings: View {
     @AppStorage(Pref.liveWaveform.rawValue) private var liveWaveform = false
     @AppStorage(Pref.artworkTint.rawValue) private var artworkTint = true
     @AppStorage(Pref.dimArtworkOnPause.rawValue) private var dimOnPause = true
+    @AppStorage(Pref.showLyrics.rawValue) private var lyrics = false
 
     var body: some View {
         Section {
             Toggle("Tint controls with the album colour", isOn: $artworkTint)
             Toggle("Dim the artwork when paused", isOn: $dimOnPause)
+        }
+        Section {
+            Toggle("Synced lyrics under the artist", isOn: $lyrics)
+        } footer: {
+            Text("From LRCLIB, a free lyrics database: the song title and artist are sent to lrclib.net.")
         }
         Section {
             Toggle("Live waveform", isOn: $liveWaveform)
@@ -242,30 +248,66 @@ private struct AgentSettings: View {
     @AppStorage(Pref.agentAlertOther.rawValue) private var other = true
     @AppStorage(Pref.agentAlertLimits.rawValue) private var limits = true
     @AppStorage(Pref.agentAlertContext.rawValue) private var context = true
-    @State private var claudeConnected = AgentConnector.isConnected
-    @State private var codexConnected = AgentConnector.isCodexConnected
+    @AppStorage(Pref.taskPermissions.rawValue) private var taskPermissions = "auto"
+    @State private var connected = Set(AgentUsage.Agent.allCases.filter(AgentConnector.isConnected))
+    @State private var skills = Set(AgentTaskRequest.agents.filter(AgentConnector.isSkillInstalled))
+    @State private var commandLink = CLI.linkedCommand
     @State private var error: String?
 
     var body: some View {
         Section {
-            agentRow(.claude, title: "Claude Code", connected: claudeConnected,
+            agentRow(.claude, title: "Claude Code",
                      detail: "Alerts, plus usage limits and session details from its status line")
             Toggle("Show Claude's usage", isOn: $claude)
-            if claudeConnected, AgentConnector.hasOwnStatusLine {
+            if connected.contains(.claude), AgentConnector.hasOwnStatusLine {
                 Text("You have your own Claude Code status line, so Nook left it alone and can't show Claude's usage.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            agentRow(.codex, title: "Codex", connected: codexConnected,
-                     detail: "Alerts. Usage is read from Codex's own logs, no connection needed")
+            agentRow(.codex, title: "Codex", detail: "Alerts. Usage is read from Codex's own logs, no connection needed")
             Toggle("Show Codex's usage", isOn: $codex)
+            agentRow(.cursor, title: "Cursor", detail: "Finished, failed, subagents and sessions, from the editor or cursor-agent")
+            agentRow(.gemini, title: "Gemini CLI", detail: "Permission, finished, compacting and sessions")
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
         } header: {
             Text("Agents")
         } footer: {
-            Text("Connecting adds hooks to ~/.claude/settings.json (and a status line) or ~/.codex/hooks.json, keeping a backup next to it. New sessions pick them up; Codex asks you to trust the hooks once. Only the alert type, message and project folder reach Nook, never your prompts. Codex logs are compressed once a session ends; reading those needs zstd (brew install zstd).")
+            Text("Connecting adds hooks to ~/.claude/settings.json (and a status line), ~/.codex/hooks.json, ~/.cursor/hooks.json or ~/.gemini/settings.json, keeping a backup next to it. New sessions pick them up; Codex asks you to trust the hooks once. Only the alert type, message and project folder reach Nook, never your prompts. Codex logs are compressed once a session ends; reading those needs zstd (brew install zstd).")
+        }
+
+        Section {
+            ForEach(AgentTaskRequest.agents, id: \.self) { agent in
+                LabeledContent {
+                    Button(skills.contains(agent) ? "Remove" : "Install") { toggleSkill(agent) }
+                } label: {
+                    HStack(spacing: 10) {
+                        AgentLogo(agent: agent, size: 20)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(agent == .claude ? "/nook skill for Claude Code" : "nook skill for Codex")
+                            Text(skills.contains(agent) ? "Installed" : "Type /nook <task>, then close the terminal")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Picker("Background tasks may", selection: $taskPermissions) {
+                Text("Decide for themselves (Claude auto mode)").tag("auto")
+                Text("Edit files in the project").tag("edits")
+                Text("Do anything, without asking").tag("all")
+            }
+            LabeledContent("Terminal command") {
+                if let commandLink {
+                    Text(commandLink).foregroundStyle(.secondary).textSelection(.enabled)
+                } else {
+                    Button("Install nook Command") { linkCommand() }
+                }
+            }
+        } header: {
+            Text("Background tasks")
+        } footer: {
+            Text("The skill hands the task to Nook, which runs the agent in that folder in the background: close the terminal and Nook shows the agent in the notch while it works and Done when it finishes. Claude's background session continues your conversation. Reopen any finished session in Terminal from the Agents page. Also from a shell: nook run \"fix the flaky test\". Codex runs sandboxed to the project unless you pick Do anything.")
         }
 
         Section {
@@ -313,8 +355,9 @@ private struct AgentSettings: View {
         }
     }
 
-    private func agentRow(_ agent: AgentUsage.Agent, title: String, connected: Bool, detail: String) -> some View {
-        LabeledContent {
+    private func agentRow(_ agent: AgentUsage.Agent, title: String, detail: String) -> some View {
+        let connected = connected.contains(agent)
+        return LabeledContent {
             Button(connected ? "Disconnect" : "Connect") { toggle(agent) }
         } label: {
             HStack(spacing: 10) {
@@ -329,27 +372,96 @@ private struct AgentSettings: View {
 
     private func toggle(_ agent: AgentUsage.Agent) {
         do {
-            switch agent {
-            case .claude: try claudeConnected ? AgentConnector.disconnect() : AgentConnector.connect()
-            case .codex: try codexConnected ? AgentConnector.disconnectCodex() : AgentConnector.connectCodex()
-            }
+            try connected.contains(agent) ? AgentConnector.disconnect(agent) : AgentConnector.connect(agent)
             error = nil
         } catch {
-            let file = agent == .claude ? "~/.claude/settings.json" : "~/.codex/hooks.json"
-            self.error = "Couldn't update \(file): \(error.localizedDescription)"
+            self.error = "Couldn't update \(agent.name)'s settings: \(error.localizedDescription)"
         }
-        claudeConnected = AgentConnector.isConnected
-        codexConnected = AgentConnector.isCodexConnected
+        connected = Set(AgentUsage.Agent.allCases.filter(AgentConnector.isConnected))
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "connectorsChanged")
+    }
+
+    private func toggleSkill(_ agent: AgentUsage.Agent) {
+        do {
+            try skills.contains(agent) ? AgentConnector.removeSkill(agent) : AgentConnector.installSkill(agent)
+            error = nil
+        } catch {
+            self.error = "Couldn't update the \(agent.name) skill: \(error.localizedDescription)"
+        }
+        skills = Set(AgentTaskRequest.agents.filter(AgentConnector.isSkillInstalled))
+    }
+
+    private func linkCommand() {
+        do {
+            commandLink = try CLI.linkCommand()
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }
 
 private struct ConnectorsSettings: View {
     @AppStorage(Pref.plugins.rawValue) private var pluginsOn = false
     @AppStorage(Pref.tabWidgets.rawValue) private var widgetsPage = false
+    @AppStorage(Pref.githubAlerts.rawValue) private var github = false
+    @AppStorage(Pref.ntfy.rawValue) private var ntfy = false
+    @AppStorage(Pref.ntfyServer.rawValue) private var ntfyServer = "https://ntfy.sh"
+    @AppStorage(Pref.ntfyTopic.rawValue) private var ntfyTopic = ""
+    @AppStorage(Pref.homeAssistant.rawValue) private var homeAssistant = false
+    @AppStorage(Pref.homeAssistantURL.rawValue) private var homeAssistantURL = ""
+    @AppStorage(Pref.homeAssistantEntities.rawValue) private var homeAssistantEntities = ""
     @State private var scripts = PluginRunner.scripts()
+    @State private var ntfyToken = Keychain.get("ntfy") ?? ""
+    @State private var homeAssistantToken = Keychain.get("homeAssistant") ?? ""
 
     var body: some View {
+        Section {
+            Text("Nook adds actions to the Shortcuts app: Show Alert, Show and Finish Progress, Start Timer, Open Nook, Run Agent Task in Background and Join Next Meeting.")
+            Button("Open Shortcuts") { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Shortcuts.app")) }
+        } header: {
+            Text("Shortcuts and Focus")
+        } footer: {
+            Text("Add Nook as a Focus filter (System Settings → Focus → a Focus → Add Filter) and give it a name: the notch shows the Focus, and with Only urgent alerts on, Nook keeps quiet except for agents that need you, timers, low battery and urgent pushes.")
+        }
+
+        Section {
+            Toggle("Review requests, mentions and CI results", isOn: $github).disabled(GitHubMonitor.gh == nil)
+        } header: {
+            Text("GitHub")
+        } footer: {
+            Text(GitHubMonitor.gh == nil
+                 ? "Needs the GitHub CLI: brew install gh, then gh auth login."
+                 : "Uses the GitHub CLI's login and checks your notifications once a minute.")
+        }
+
+        Section {
+            Toggle("Show messages from an ntfy topic", isOn: $ntfy)
+            TextField("Server", text: $ntfyServer)
+            TextField("Topic", text: $ntfyTopic)
+            if !ntfyTopic.isEmpty, !NtfyMonitor.isValidTopic(ntfyTopic) {
+                Text("A topic is up to 64 letters, numbers, - and _.").font(.caption).foregroundStyle(.red)
+            }
+            secret("Access token (optional)", $ntfyToken, account: "ntfy")
+        } header: {
+            Text("Push alerts (ntfy)")
+        } footer: {
+            Text("Send to the notch from a server, a phone or cron: curl -d \"Backup done\" ntfy.sh/your-topic. Anyone who knows the topic can send to it, so pick a long, hard-to-guess one. Priority 4 and 5 messages show even when a Focus keeps Nook quiet.")
+        }
+
+        Section {
+            Toggle("Show Home Assistant entities", isOn: $homeAssistant)
+                .onChange(of: homeAssistant) { _, on in if on { widgetsPage = true } }
+            TextField("Server", text: $homeAssistantURL, prompt: Text("http://homeassistant.local:8123"))
+            secret("Long-lived access token", $homeAssistantToken, account: "homeAssistant")
+            TextField("Entities", text: $homeAssistantEntities, prompt: Text("light.office, binary_sensor.front_door"),
+                      axis: .vertical)
+        } header: {
+            Text("Home Assistant")
+        } footer: {
+            Text("Tiles show on the Widgets page: tap a light, switch or fan to toggle it. Doors, sensors and locks alert in the notch when they change. Make a token in Home Assistant under your profile → Security. Tokens are kept in your keychain.")
+        }
+
         Section {
             Toggle("Run plugin scripts", isOn: $pluginsOn)
             Toggle("Show the Widgets page", isOn: $widgetsPage)
@@ -379,6 +491,16 @@ private struct ConnectorsSettings: View {
         }
     }
 
+    private func secret(_ title: String, _ value: Binding<String>, account: String) -> some View {
+        LabeledContent(title) {
+            SecureField(title, text: value).labelsHidden()
+            Button("Save") {
+                Keychain.set(value.wrappedValue, account)
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "connectorsChanged")
+            }
+        }
+    }
+
     private func addExample() {
         let script = """
         #!/bin/sh
@@ -405,6 +527,7 @@ private struct ConnectorsSettings: View {
 private struct IslandSettings: View {
     @AppStorage(Pref.showCalendar.rawValue) private var calendar = false
     @AppStorage(Pref.showWeather.rawValue) private var weather = false
+    @AppStorage(Pref.showReminders.rawValue) private var reminders = false
     @AppStorage(Pref.tabShelf.rawValue) private var shelf = true
     @AppStorage(Pref.tabWidgets.rawValue) private var widgets = false
     @AppStorage(Pref.tabClipboard.rawValue) private var clipboard = false
@@ -417,11 +540,12 @@ private struct IslandSettings: View {
     var body: some View {
         Section {
             Toggle("Calendar next to now playing", isOn: $calendar)
+            Toggle("Reminders due today", isOn: $reminders)
             Toggle("Weather", isOn: $weather)
         } header: {
             Text("Home")
         } footer: {
-            Text("macOS asks for calendar or location access when you turn these on. Weather comes from Open-Meteo.")
+            Text("macOS asks for calendar, reminders or location access when you turn these on. Meetings with a Zoom, Meet, Teams, Webex or FaceTime link get a Join button; tick a reminder to complete it, and reminders with a time alert when they're due. Weather comes from Open-Meteo.")
         }
         Section("Tabs") {
             Toggle("Shelf (drop files, AirDrop)", isOn: $shelf)

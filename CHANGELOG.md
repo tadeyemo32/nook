@@ -3,6 +3,41 @@
 Nook follows [semantic versioning](https://semver.org). Until 1.0, a minor version
 can include breaking changes.
 
+## 0.6.0 — 2026-10-23
+
+Accurate agent status
+- Done means done. Claude Code ends a reply even while background tasks run, prompts are
+  scheduled, or it has asked you something; Nook now reads that from the Stop hook and shows
+  "2 running", Scheduled or Question instead, and the session stays active beside the notch.
+- API errors (Claude's StopFailure hook) show as failures, with the error.
+- The session that hands a task to Nook no longer says Done as it hands off.
+- A background task that hits its turn or budget limit counts as failed, not done.
+
+Background tasks
+- A `/nook` skill for Claude Code and Codex (Settings → Coding Agents → Install). Type
+  `/nook <task>`, close the terminal, and Nook runs the agent itself: its logo stays in the
+  notch while it works, then Done or Failed with a sound. Claude's run forks your session,
+  so it keeps the conversation. Tasks survive Nook quitting.
+- The Agents page lists recent tasks with their summary, Stop, and Continue in Terminal.
+- Choose what tasks may do: Claude's auto mode (default), edit files, or anything.
+
+Connectors
+- A `nook` command (show, progress, done, clear, timer, open, close, run), installable from
+  Settings.
+- Shortcuts actions: Show Alert, Show / Finish Progress, Start Timer, Open Nook, Run Agent
+  Task in Background, Join Next Meeting. A Focus filter shows the Focus and can keep Nook
+  quiet except for urgent alerts.
+- Cursor and Gemini CLI alerts.
+- GitHub notifications (review requests, mentions, CI results) through the `gh` CLI.
+- ntfy push alerts from anywhere, with self-hosted servers and tokens.
+- Home Assistant tiles on the Widgets page; tap to toggle lights, switches and fans.
+- Join buttons on calendar events with a Zoom, Meet, Teams, Webex or FaceTime link.
+- Today's reminders on Home, tick to complete, with alerts when they're due.
+- Synced lyrics under the artist, from LRCLIB.
+
+Project
+- Unit tests (`swift test`), run in CI.
+
 ## 0.5.0 — 2026-10-19
 
 Motion

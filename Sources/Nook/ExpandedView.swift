@@ -77,7 +77,7 @@ private struct HomeTab: View {
             }
             if model.showsCalendar {
                 Divider().overlay(.white.opacity(0.12))
-                CalendarColumn(events: model.events).frame(width: 160)
+                CalendarColumn(model: model).frame(width: 160)
             }
         }
     }
@@ -103,9 +103,12 @@ private struct ClockView: View {
 }
 
 private struct CalendarColumn: View {
-    let events: [CalendarItem]
+    let model: IslandModel
+    @AppStorage(Pref.showCalendar.rawValue) private var showsEvents = false
 
     var body: some View {
+        let events = showsEvents ? model.events : []
+        let reminders = model.reminders.prefix(events.isEmpty ? 3 : 2)
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(Date.now, format: .dateTime.weekday(.abbreviated))
@@ -115,17 +118,44 @@ private struct CalendarColumn: View {
                 Text(Date.now, format: .dateTime.day())
                     .font(.system(size: 20, weight: .semibold))
             }
-            if events.isEmpty {
+            if showsEvents, events.isEmpty, reminders.isEmpty {
                 Text("No more events today")
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.5))
             }
-            ForEach(events.prefix(3)) { event in
+            ForEach(events.prefix(reminders.isEmpty ? 3 : 2)) { event in
                 HStack(alignment: .top, spacing: 6) {
                     Capsule().fill(Color(event.color)).frame(width: 3, height: 26)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(event.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                         Text(timeText(event)).font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
+                    }
+                    Spacer(minLength: 0)
+                    if let url = event.meetingURL {
+                        Button { NSWorkspace.shared.open(url) } label: {
+                            Image(systemName: "video.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 24, height: 18)
+                                .background(Capsule().fill(event.id == model.nextMeeting?.id ? Color.green : .white.opacity(0.15)))
+                        }
+                        .buttonStyle(PressableButtonStyle())
+                        .help("Join")
+                    }
+                }
+            }
+            ForEach(reminders) { reminder in
+                HStack(spacing: 6) {
+                    Button { model.onCompleteReminder?(reminder.id) } label: {
+                        Image(systemName: "circle").font(.system(size: 11)).foregroundStyle(Color(reminder.color))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .help("Mark as done")
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(reminder.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                        if let due = reminder.due, due < Date() {
+                            Text("Overdue").font(.system(size: 10)).foregroundStyle(.red.opacity(0.8))
+                        }
                     }
                 }
             }
@@ -233,18 +263,18 @@ private struct WidgetsTab: View {
     let model: IslandModel
 
     var body: some View {
-        if model.widgets.isEmpty {
+        if model.widgets.isEmpty && model.homeWidgets.isEmpty {
             VStack(spacing: 6) {
                 Image(systemName: "puzzlepiece.extension").font(.system(size: 20))
-                Text("Add plugin scripts in Settings → Connectors")
+                Text("Add plugin scripts or Home Assistant in Settings → Connectors")
                     .font(.system(size: 12))
             }
             .foregroundStyle(.white.opacity(0.5))
         } else {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                    ForEach(model.widgets) { item in
-                        WidgetTile(item: item)
+                    ForEach(model.homeWidgets + model.widgets) { item in
+                        WidgetTile(model: model, item: item)
                     }
                 }
             }
@@ -253,6 +283,7 @@ private struct WidgetsTab: View {
 }
 
 private struct WidgetTile: View {
+    let model: IslandModel
     let item: PluginItem
     @State private var hovering = false
 
@@ -285,7 +316,9 @@ private struct WidgetTile: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(hovering ? 0.1 : 0.06)))
         .onHover { hovering = $0 }
-        .onTapGesture { item.url.map { NSWorkspace.shared.open($0) } }
+        .onTapGesture {
+            if let entity = item.entity { model.onHomeToggle?(entity) } else { item.url.map { NSWorkspace.shared.open($0) } }
+        }
     }
 }
 
@@ -459,7 +492,7 @@ struct AgentLogo: View {
         } else {
             Image(systemName: agent.symbol)
                 .font(.system(size: size * 0.75, weight: .bold))
-                .foregroundStyle(agent == .claude ? Color(agent.tint) : .primary)
+                .foregroundStyle(agent.tint == .white ? .primary : Color(agent.tint))
                 .frame(width: size, height: size)
         }
     }
@@ -524,7 +557,7 @@ private struct AgentsTab: View {
     let model: IslandModel
 
     var body: some View {
-        if model.agents.isEmpty {
+        if model.agents.isEmpty && model.tasks.isEmpty {
             VStack(spacing: 6) {
                 Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 20))
                 Text("Connect Claude Code or use Codex, and their usage shows up here")
@@ -532,12 +565,83 @@ private struct AgentsTab: View {
             }
             .foregroundStyle(.white.opacity(0.5))
         } else {
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(model.agents) { usage in
-                    AgentCard(usage: usage)
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 8) {
+                    ForEach(model.tasks) { task in
+                        TaskRow(model: model, task: task)
+                    }
+                    if !model.agents.isEmpty {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(model.agents) { usage in
+                                AgentCard(usage: usage)
+                            }
+                        }
+                    }
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
+        }
+    }
+}
+
+private struct TaskRow: View {
+    let model: IslandModel
+    let task: AgentTask
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            AgentLogo(agent: task.agent, size: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(task.project).font(.system(size: 12, weight: .semibold))
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(status(at: context.date))
+                            .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(color)
+                    }
+                }
+                Text(task.summary ?? task.prompt)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if task.status == .running {
+                button("stop.circle.fill", "Stop", .stop)
+            } else {
+                if task.session != nil { button("terminal.fill", "Continue in Terminal", .openInTerminal) }
+                button("xmark.circle.fill", "Remove", .remove)
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(hovering ? 0.1 : 0.06)))
+        .onHover { hovering = $0 }
+        .help(task.summary ?? task.prompt)
+    }
+
+    private func button(_ symbol: String, _ help: String, _ action: TaskAction) -> some View {
+        Button { model.onTask?(task.id, action) } label: { Image(systemName: symbol).font(.system(size: 15)) }
+            .buttonStyle(PressableButtonStyle())
+            .help(help)
+    }
+
+    private var color: Color {
+        switch task.status {
+        case .running: return .white.opacity(0.6)
+        case .done: return .green
+        case .failed: return .red
+        case .stopped: return .orange
+        }
+    }
+
+    private func status(at date: Date) -> String {
+        let elapsed = (task.finished ?? date).timeIntervalSince(task.started)
+        switch task.status {
+        case .running: return "Working · \(formatTime(elapsed))"
+        case .done: return "Done in \(formatTime(elapsed))"
+        case .failed: return "Failed"
+        case .stopped: return "Stopped"
         }
     }
 }

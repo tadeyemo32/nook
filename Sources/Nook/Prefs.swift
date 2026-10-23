@@ -16,6 +16,8 @@ enum Pref: String {
     case agentAlertPermission, agentAlertWaiting, agentAlertSubagent, agentAlertCompact, agentAlertSession
     case agentAlertOther, agentAlertLimits, agentAlertContext
     case shelfItems
+    case taskPermissions, showReminders, showLyrics, githubAlerts
+    case ntfy, ntfyServer, ntfyTopic, homeAssistant, homeAssistantURL, homeAssistantEntities
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -50,6 +52,8 @@ enum Pref: String {
             Pref.agentAlertOther.rawValue: true,
             Pref.agentAlertLimits.rawValue: true,
             Pref.agentAlertContext.rawValue: true,
+            Pref.taskPermissions.rawValue: "auto",
+            Pref.ntfyServer.rawValue: "https://ntfy.sh",
         ])
     }
 

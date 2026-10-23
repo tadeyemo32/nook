@@ -1,7 +1,7 @@
 import AppKit
 
 enum URLCommands {
-    static func handle(_ url: URL, model: IslandModel, agents: AgentConnector) {
+    static func handle(_ url: URL, model: IslandModel, agents: AgentConnector, tasks: AgentTaskRunner) {
         guard url.scheme == "nook", let command = url.host else { return }
         let query = Dictionary(
             (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
@@ -42,6 +42,8 @@ enum URLCommands {
             model.onOpenSettings?()
         case "claude":
             agents.handle(query)
+        case "task":
+            tasks.start(id: query["id"] ?? "")
         default:
             break
         }

@@ -1,0 +1,3 @@
+["AppIntent", "SetFocusFilterIntent", "EntityQuery", "AppEntity", "TransientEntity", "AppEnum", "AppShortcutProviding",
+ "AppShortcutsProvider", "AnyResolverProviding", "AppIntentsPackage", "DynamicOptionsProvider", "IntentValueQuery",
+ "Resolver", "_IntentValueRepresentable"]
