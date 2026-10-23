@@ -1,0 +1,84 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Build universal app bundle
+        run: UNIVERSAL=1 sh scripts/bundle.sh
+
+      - name: Verify bundle
+        run: |
+          sh scripts/verify-bundle.sh
+          lipo -archs build/Nook.app/Contents/MacOS/Nook | grep -q 'x86_64 arm64'
+          lipo -archs build/Nook.app/Contents/XPCServices/NookHelper.xpc/Contents/MacOS/NookHelper | grep -q 'x86_64 arm64'
+
+      - name: Zip app
+        run: cd build && ditto -c -k --keepParent Nook.app Nook.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Nook
+          path: build/Nook.zip
+
+  smoke-test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-15-intel, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Nook
+
+      - name: Launch and check the XPC helper starts
+        run: |
+          sw_vers; uname -m
+          ditto -x -k Nook.zip .
+          open Nook.app
+          for i in $(seq 1 20); do
+            if pgrep -x NookHelper >/dev/null; then
+              echo "NookHelper running after ${i}s"
+              pgrep -lx Nook
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "NookHelper never started" >&2
+          pgrep -lx Nook || echo "Nook is not running either" >&2
+          log show --last 2m --style compact --predicate 'eventMessage CONTAINS[c] "NookHelper" OR process == "Nook"' | tail -50
+          exit 1
+
+      - name: Quit app
+        if: always()
+        run: pkill -x Nook || true
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Nook
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" Nook.zip --repo "$GITHUB_REPOSITORY" --title "Nook $GITHUB_REF_NAME" --generate-notes

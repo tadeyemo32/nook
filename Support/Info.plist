@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Nook</string>
+    <key>CFBundleDisplayName</key>
+    <string>Nook</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.nook.app</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleExecutable</key>
+    <string>Nook</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Nook reads what's playing in Music and Spotify and controls playback from the notch.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Nook listens to the Mac's audio output to draw the live waveform in the notch. Nothing is recorded or stored.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Nook shows when your AirPods and other Bluetooth devices connect, with their battery level.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Nook shows your camera in the Mirror tab. Nothing is recorded or stored.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Nook shows your upcoming events in the notch and reminds you before they start.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Nook shows your upcoming events in the notch and reminds you before they start.</string>
+    <key>NSLocationUsageDescription</key>
+    <string>Nook uses your approximate location to show the local weather.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Nook uses your approximate location to show the local weather.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>dev.nook.app</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>nook</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Any File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>None</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.item</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
